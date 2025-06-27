@@ -15,23 +15,24 @@ const client = new MercadoPagoConfig({
 const app = express();
 
 // Configuração do CORS para produção e desenvolvimento
+
 const allowedOrigins = [
   'https://frontend-cervejariavirada1.vercel.app',
-  'https://cervejaria-virada-backend.onrender.com',
-  'http://localhost:3000', // Para desenvolvimento
-  'http://localhost:3001'  // Para desenvolvimento
+  'https://frontend-cervejariavirada1-p7zdbq8if-pedrolucas003s-projects.vercel.app',
+  'http://localhost:3000'
 ];
 
 app.use(cors({
-  origin: function(origin, callback) {
+  origin: function (origin, callback) {
     // Permite requisições sem origin (como mobile apps ou curl requests)
     if (!origin) return callback(null, true);
     
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
-      return callback(new Error(msg), false);
+    if (allowedOrigins.indexOf(origin) !== -1 || origin.includes('.vercel.app')) {
+      return callback(null, true);
     }
-    return callback(null, true);
+    
+    const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+    return callback(new Error(msg), false);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
