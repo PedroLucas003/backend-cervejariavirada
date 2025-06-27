@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 const connectDB = require('./src/config/db');
 const { MercadoPagoConfig, Preference } = require('mercadopago');
 const authMiddleware = require('./src/middlewares/authMiddleware');
@@ -14,34 +15,66 @@ const client = new MercadoPagoConfig({
 
 const app = express();
 
-// Configuração do CORS para produção e desenvolvimento
-
-const allowedOrigins = [
-  'https://frontend-cervejariavirada1.vercel.app',
-  'https://frontend-cervejariavirada1-p7zdbq8if-pedrolucas003s-projects.vercel.app',
-  'http://localhost:3000'
-];
-
-app.use(cors({
-  origin: function (origin, callback) {
-    // Permite requisições sem origin (como mobile apps ou curl requests)
+// Configuração avançada do CORS
+const corsOptions = {
+  origin: (origin, callback) => {
+    const allowedOrigins = [
+      'https://frontend-cervejariavirada1.vercel.app',
+      /https:\/\/frontend-cervejariavirada1-.*\.vercel\.app/,
+      'http://localhost:3000'
+    ];
+    
+    // Permitir requests sem origin (mobile apps, etc)
     if (!origin) return callback(null, true);
     
-    if (allowedOrigins.indexOf(origin) !== -1 || origin.includes('.vercel.app')) {
+    if (allowedOrigins.some(pattern => {
+      if (typeof pattern === 'string') {
+        return origin === pattern;
+      } else if (pattern instanceof RegExp) {
+        return pattern.test(origin);
+      }
+      return false;
+    })) {
       return callback(null, true);
     }
     
-    const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
-    return callback(new Error(msg), false);
+    callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
-}));
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Content-Length', 'X-Powered-By']
+};
+
+app.use(cors(corsOptions));
+
+// Middleware para headers de segurança
+app.use((req, res, next) => {
+  // Headers para CORS
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  
+  // Headers de segurança
+  res.header('X-Powered-By', 'Cervejaria Virada API');
+  res.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  res.header('X-Content-Type-Options', 'nosniff');
+  res.header('X-Frame-Options', 'DENY');
+  res.header('X-XSS-Protection', '1; mode=block');
+  
+  next();
+});
 
 // Middleware para parsear JSON
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Rota para o manifest.json
+app.get('/manifest.json', (req, res) => {
+  res.set('Content-Type', 'application/json');
+  res.sendFile(path.join(__dirname, 'public', 'manifest.json'));
+});
 
 // Conectar ao MongoDB
 connectDB();
@@ -128,13 +161,10 @@ app.post('/api/payments/webhook', async (req, res) => {
   try {
     console.log('Webhook do Mercado Pago recebido:', req.body);
     
-    // Aqui você deve implementar a lógica para verificar e atualizar o status do pagamento
-    // Exemplo básico:
     if (req.body.action === 'payment.updated') {
       const paymentId = req.body.data.id;
       const paymentStatus = req.body.data.status;
       
-      // Atualize o pedido no seu banco de dados
       await Order.findOneAndUpdate(
         { 'paymentInfo.paymentId': paymentId },
         { 
@@ -168,32 +198,61 @@ app.use('/api/pix', pixRoutes);
 
 // Rota de health check para o Render
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'healthy' });
+  res.status(200).json({ 
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development'
+  });
 });
 
 // Rota raiz
 app.get('/', (req, res) => {
-  res.send('API da Cervejaria Virada está funcionando!');
+  res.json({
+    message: 'API da Cervejaria Virada está funcionando!',
+    version: '1.0.0',
+    environment: process.env.NODE_ENV || 'development',
+    documentation: `${process.env.BACKEND_URL}/api-docs`
+  });
 });
 
 // Middleware para rotas não encontradas
 app.use((req, res, next) => {
-  res.status(404).json({ success: false, message: 'Rota não encontrada' });
+  res.status(404).json({ 
+    success: false, 
+    message: 'Rota não encontrada',
+    path: req.path,
+    method: req.method
+  });
 });
 
 // Middleware para tratamento de erros
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(500).json({ success: false, message: 'Erro interno do servidor' });
+  
+  // Tratamento específico para erros de CORS
+  if (err.message === 'Not allowed by CORS') {
+    return res.status(403).json({ 
+      success: false,
+      message: 'Acesso não permitido pela política CORS',
+      origin: req.headers.origin
+    });
+  }
+  
+  res.status(500).json({ 
+    success: false, 
+    message: 'Erro interno do servidor',
+    error: process.env.NODE_ENV === 'development' ? err.message : undefined
+  });
 });
 
 // Iniciar servidor
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
   console.log(`Modo: ${process.env.NODE_ENV || 'development'}`);
   console.log(`Frontend URL: ${process.env.FRONTEND_URL}`);
   console.log(`Backend URL: ${process.env.BACKEND_URL}`);
+  console.log(`Banco de Dados: ${process.env.DB_FULL_URI ? 'Conectado' : 'Não configurado'}`);
 });
 
 // Encerramento adequado do servidor
@@ -201,5 +260,15 @@ process.on('SIGTERM', () => {
   console.log('SIGTERM received. Shutting down gracefully');
   server.close(() => {
     console.log('Process terminated');
+    mongoose.connection.close(false, () => {
+      console.log('MongoDB connection closed');
+      process.exit(0);
+    });
   });
+});
+
+// Tratamento de erros não capturados
+process.on('unhandledRejection', (err) => {
+  console.error('Erro não tratado:', err);
+  server.close(() => process.exit(1));
 });
