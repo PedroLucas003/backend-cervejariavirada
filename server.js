@@ -1,9 +1,10 @@
+// server.js (VERSÃO COM INTEGRAÇÃO PIX VIA MERCADO PAGO API)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const connectDB = require('./src/config/db');
-const { MercadoPagoConfig, Preference } = require('mercadopago');
+const { MercadoPagoConfig, Preference, Payment } = require('mercadopago'); // Adicionado 'Payment'
 const authMiddleware = require('./src/middlewares/authMiddleware');
 const Order = require('./src/models/Order');
 const mongoose = require('mongoose');
@@ -24,7 +25,6 @@ const corsOptions = {
       'http://localhost:3000'
     ];
     
-    // Permitir requests sem origin (mobile apps, etc)
     if (!origin) return callback(null, true);
     
     if (allowedOrigins.some(pattern => {
@@ -50,13 +50,11 @@ app.use(cors(corsOptions));
 
 // Middleware para headers de segurança
 app.use((req, res, next) => {
-  // Headers para CORS
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   
-  // Headers de segurança
   res.header('X-Powered-By', 'Cervejaria Virada API');
   res.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   res.header('X-Content-Type-Options', 'nosniff');
@@ -70,7 +68,7 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Rota para o manifest.json
+// Rota para o manifest.json (se você tiver um)
 app.get('/manifest.json', (req, res) => {
   res.set('Content-Type', 'application/json');
   res.sendFile(path.join(__dirname, 'public', 'manifest.json'));
@@ -83,13 +81,12 @@ connectDB();
 // ROTAS DE PAGAMENTO (MERCADO PAGO)
 // =======================================================
 
-// Rota para criar a preferência de pagamento
+// Rota para criar a PREFERÊNCIA de pagamento (para outros métodos como cartão/boleto)
 app.post('/api/payments/create-preference', authMiddleware, async (req, res) => {
   try {
     const { items, shippingAddress } = req.body;
     const { user, userId } = req;
 
-    // Cria o pedido no banco de dados com status 'pending'
     const newOrder = new Order({
       user: userId,
       userEmail: user.email,
@@ -111,7 +108,7 @@ app.post('/api/payments/create-preference', authMiddleware, async (req, res) => 
         cep: shippingAddress.cep.replace(/\D/g, ''),
       },
       paymentInfo: {
-        paymentId: new mongoose.Types.ObjectId().toString(),
+        paymentId: new mongoose.Types.ObjectId().toString(), // ID provisório
         paymentStatus: 'pending'
       },
       status: 'pending'
@@ -119,7 +116,6 @@ app.post('/api/payments/create-preference', authMiddleware, async (req, res) => 
     
     const savedOrder = await newOrder.save();
 
-    // Cria a preferência de pagamento no Mercado Pago
     const preference = new Preference(client);
     const preferenceResponse = await preference.create({
       body: {
@@ -140,10 +136,13 @@ app.post('/api/payments/create-preference', authMiddleware, async (req, res) => 
           pending: `${process.env.FRONTEND_URL}/payment-pending`,
         },
         auto_return: 'approved',
-        external_reference: savedOrder._id.toString(),
+        external_reference: savedOrder._id.toString(), 
         notification_url: `${process.env.BACKEND_URL}/api/payments/webhook`,
       }
     });
+
+    savedOrder.paymentInfo.preferenceId = preferenceResponse.id;
+    await savedOrder.save();
 
     res.json({
       preferenceId: preferenceResponse.id,
@@ -156,45 +155,159 @@ app.post('/api/payments/create-preference', authMiddleware, async (req, res) => 
   }
 });
 
-// Rota de webhook para receber notificações do Mercado Pago
-app.post('/api/payments/webhook', async (req, res) => {
+// NOVA ROTA PARA CRIAR PAGAMENTO PIX VIA MERCADO PAGO API
+app.post('/api/payments/create-pix-payment', authMiddleware, async (req, res) => {
   try {
-    console.log('Webhook do Mercado Pago recebido:', req.body);
-    
-    if (req.body.action === 'payment.updated') {
-      const paymentId = req.body.data.id;
-      const paymentStatus = req.body.data.status;
-      
-      await Order.findOneAndUpdate(
-        { 'paymentInfo.paymentId': paymentId },
-        { 
-          'paymentInfo.paymentStatus': paymentStatus,
-          status: paymentStatus === 'approved' ? 'processing' : paymentStatus
-        }
-      );
+    const { orderId } = req.body; // Recebe o orderId do frontend
+    const { user } = req;
+
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ message: 'Pedido não encontrado.' });
     }
-    
-    res.status(200).send('ok');
+
+    if (order.status !== 'pending' && order.paymentInfo.paymentStatus !== 'pending') {
+      return res.status(400).json({ message: 'Pedido já foi processado ou está em status inválido para PIX.' });
+    }
+
+    const paymentInstance = new Payment(client);
+    const paymentResponse = await paymentInstance.create({
+      body: {
+        transaction_amount: parseFloat(order.total.toFixed(2)), // Valor total do pedido
+        description: `Pedido Cervejaria Virada #${order._id.toString()}`,
+        payment_method_id: 'pix', // Indica que é um pagamento PIX
+        payer: {
+          email: user.email, // Email do pagador
+          first_name: user.nomeCompleto.split(' ')[0] || 'Cliente',
+          last_name: user.nomeCompleto.split(' ').slice(1).join(' ') || '',
+          identification: { // Opcional, mas bom para identificação
+            type: user.documentType || 'CPF', // Assumindo que você tem isso no user
+            number: user.documentNumber || '99999999999' // Assumindo que você tem isso no user
+          }
+        },
+        external_reference: order._id.toString(), // Linka o pagamento MP ao seu Order ID
+        notification_url: `${process.env.BACKEND_URL}/api/payments/webhook`,
+      }
+    });
+
+    // Atualiza o pedido com as informações do pagamento PIX do Mercado Pago
+    order.paymentInfo = {
+      ...order.paymentInfo, // Mantém o paymentId provisório se já existir
+      paymentId: paymentResponse.id, // ID real do pagamento no Mercado Pago
+      paymentMethod: 'pix',
+      paymentStatus: paymentResponse.status, // Status inicial do PIX (pending)
+      pixCode: paymentResponse.point_of_interaction.transaction_data.qr_code, // Código copia e cola
+      qrCodeBase64: paymentResponse.point_of_interaction.transaction_data.qr_code_base64, // QR Code em base64
+      expirationDate: new Date(paymentResponse.date_of_expiration), // Data de expiração do PIX
+      paymentDetails: paymentResponse // Salva a resposta completa do MP
+    };
+    await order.save();
+
+    res.json({
+      success: true,
+      qrCodeBase64: order.paymentInfo.qrCodeBase64,
+      pixCode: order.paymentInfo.pixCode,
+      expirationDate: order.paymentInfo.expirationDate,
+      amount: order.total,
+      paymentIdMP: order.paymentInfo.paymentId // Retorna o ID do pagamento do MP
+    });
+
   } catch (error) {
-    console.error('Erro no webhook:', error);
-    res.status(500).send('Erro ao processar webhook');
+    console.error('Erro ao criar pagamento PIX via Mercado Pago API:', error);
+    // Log detalhado do erro da API do Mercado Pago
+    if (error.cause && error.cause.length > 0) {
+        error.cause.forEach(e => console.error('MP API Error:', e.code, e.description));
+    }
+    res.status(500).json({ 
+      message: 'Erro ao criar pagamento PIX.',
+      error: error.message,
+      mp_error_details: error.cause ? error.cause.map(e => ({ code: e.code, description: e.description })) : undefined
+    });
   }
 });
 
+
+// Rota de webhook para receber notificações do Mercado Pago (APRIMORADA)
+app.post('/api/payments/webhook', async (req, res) => {
+  console.log('Webhook do Mercado Pago recebido:', JSON.stringify(req.body, null, 2));
+
+  // O Mercado Pago pode enviar diferentes tipos de notificações (payment, merchant_order, etc.)
+  // Nosso foco é 'payment' para atualização de status.
+  if (req.body && req.body.type === 'payment' && req.body.data && req.body.data.id) {
+    const paymentId = req.body.data.id;
+    console.log(`Webhook de pagamento recebido para Payment ID: ${paymentId}`);
+
+    try {
+      const payment = new Payment(client);
+      const paymentDetails = await payment.get({ id: paymentId });
+      console.log('Detalhes completos do pagamento do Mercado Pago:', JSON.stringify(paymentDetails, null, 2));
+
+      const externalReference = paymentDetails.external_reference; // Nosso order._id
+      const paymentStatusMP = paymentDetails.status; // Status do Mercado Pago (approved, pending, rejected, etc.)
+      const netReceivedAmount = paymentDetails.transaction_details?.net_received_amount;
+      const mercadoPagoFee = paymentDetails.fee_details?.reduce((sum, fee) => sum + fee.amount, 0);
+
+      if (externalReference) {
+        const order = await Order.findById(externalReference);
+
+        if (order) {
+          console.log(`Atualizando pedido ${order._id} com status de pagamento: ${paymentStatusMP}`);
+          
+          order.paymentInfo.paymentId = paymentId; // Garante que o paymentId do MP esteja salvo
+          order.paymentInfo.paymentStatus = paymentStatusMP;
+          order.paymentInfo.paymentDetails = paymentDetails; // Salva todos os detalhes do MP
+          order.paymentInfo.netReceivedAmount = netReceivedAmount;
+          order.paymentInfo.mercadoPagoFee = mercadoPagoFee;
+
+          // Mapeia o status do Mercado Pago para o status do seu pedido
+          if (paymentStatusMP === 'approved') {
+            order.status = 'processing';
+            order.paidAt = new Date();
+          } else if (paymentStatusMP === 'pending' || paymentStatusMP === 'in_process') {
+            order.status = 'pending'; 
+          } else if (paymentStatusMP === 'rejected' || paymentStatusMP === 'cancelled' || paymentStatusMP === 'refunded' || paymentStatusMP === 'charged_back') {
+            order.status = 'cancelled'; 
+          }
+
+          await order.save();
+          console.log(`Pedido ${order._id} atualizado com sucesso para status: ${order.status}`);
+        } else {
+          console.warn(`Webhook: Pedido com external_reference ${externalReference} não encontrado no banco de dados.`);
+        }
+      } else {
+        console.warn('Webhook: Notificação recebida sem external_reference. Não foi possível associar a um pedido.');
+      }
+
+    } catch (error) {
+      console.error('Erro ao processar webhook do Mercado Pago:', error);
+      // Log detalhado do erro da API do Mercado Pago
+      if (error.response && error.response.data) {
+          console.error('MP API Error Response:', error.response.data);
+      }
+    }
+  } else {
+    console.warn('Webhook: Notificação recebida com formato inesperado ou tipo não processado:', req.body);
+  }
+
+  res.status(200).send('ok'); // Sempre responda 200 OK para o Mercado Pago
+});
+
+
 // =======================================================
-// ROTAS DA APLICAÇÃO
+// ROTAS DA APLICAÇÃO (MANTIDAS)
 // =======================================================
 const authRoutes = require('./src/routes/authRoutes');
 const beerRoutes = require('./src/routes/beerRoutes');
 const userRoutes = require('./src/routes/userRoutes');
 const orderRoutes = require('./src/routes/orderRoutes');
-const pixRoutes = require('./src/routes/pixRoutes');
+const pixRoutes = require('./src/routes/pixRoutes'); // Esta rota de PIX estático será desativada ou removida
 
 app.use('/api/auth', authRoutes);
 app.use('/api/beers', beerRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/orders', orderRoutes);
-app.use('/api/pix', pixRoutes);
+// A rota /api/pix será desativada ou modificada, pois a geração PIX agora será via /api/payments/create-pix-payment
+// app.use('/api/pix', pixRoutes); // Comente ou remova esta linha se não for mais usar o PIX estático
 
 // Rota de health check para o Render
 app.get('/health', (req, res) => {
@@ -229,7 +342,6 @@ app.use((req, res, next) => {
 app.use((err, req, res, next) => {
   console.error(err.stack);
   
-  // Tratamento específico para erros de CORS
   if (err.message === 'Not allowed by CORS') {
     return res.status(403).json({ 
       success: false,
