@@ -1,4 +1,3 @@
-// server.js (VERSÃO FINAL E COMPLETA)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -8,36 +7,55 @@ const authMiddleware = require('./src/middlewares/authMiddleware');
 const Order = require('./src/models/Order');
 const mongoose = require('mongoose');
 
-// --- Configuração do Cliente Mercado Pago ---
+// Configuração do Cliente Mercado Pago
 const client = new MercadoPagoConfig({ 
   accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN 
 });
 
 const app = express();
 
-// Middleware
+// Configuração do CORS para produção e desenvolvimento
+const allowedOrigins = [
+  'https://frontend-cervejariavirada1.vercel.app',
+  'https://cervejaria-virada-backend.onrender.com',
+  'http://localhost:3000', // Para desenvolvimento
+  'http://localhost:3001'  // Para desenvolvimento
+];
+
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:3001'],
+  origin: function(origin, callback) {
+    // Permite requisições sem origin (como mobile apps ou curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
-app.use(express.json());
+
+// Middleware para parsear JSON
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Conectar ao MongoDB
 connectDB();
 
 // =======================================================
-// --- NOVAS ROTAS DE PAGAMENTO (MERCADO PAGO) ---
+// ROTAS DE PAGAMENTO (MERCADO PAGO)
 // =======================================================
 
-// ROTA PARA CRIAR A PREFERÊNCIA DE PAGAMENTO
+// Rota para criar a preferência de pagamento
 app.post('/api/payments/create-preference', authMiddleware, async (req, res) => {
   try {
     const { items, shippingAddress } = req.body;
     const { user, userId } = req;
 
-    // 1. Cria o pedido no seu banco de dados com status 'pending'
+    // Cria o pedido no banco de dados com status 'pending'
     const newOrder = new Order({
       user: userId,
       userEmail: user.email,
@@ -58,7 +76,6 @@ app.post('/api/payments/create-preference', authMiddleware, async (req, res) => 
         estado: shippingAddress.state,
         cep: shippingAddress.cep.replace(/\D/g, ''),
       },
-      // Adiciona o paymentInfo obrigatório com um ID provisório
       paymentInfo: {
         paymentId: new mongoose.Types.ObjectId().toString(),
         paymentStatus: 'pending'
@@ -68,7 +85,7 @@ app.post('/api/payments/create-preference', authMiddleware, async (req, res) => 
     
     const savedOrder = await newOrder.save();
 
-    // 2. Cria a preferência de pagamento no Mercado Pago
+    // Cria a preferência de pagamento no Mercado Pago
     const preference = new Preference(client);
     const preferenceResponse = await preference.create({
       body: {
@@ -105,16 +122,36 @@ app.post('/api/payments/create-preference', authMiddleware, async (req, res) => 
   }
 });
 
-// ROTA DE WEBHOOK PARA RECEBER NOTIFICAÇÕES DO MERCADO PAGO
-app.post('/api/payments/webhook', (req, res) => {
-  console.log('Webhook do Mercado Pago recebido:', req.body);
-  // Lógica futura para atualizar o status do pedido
-  res.status(200).send('ok');
+// Rota de webhook para receber notificações do Mercado Pago
+app.post('/api/payments/webhook', async (req, res) => {
+  try {
+    console.log('Webhook do Mercado Pago recebido:', req.body);
+    
+    // Aqui você deve implementar a lógica para verificar e atualizar o status do pagamento
+    // Exemplo básico:
+    if (req.body.action === 'payment.updated') {
+      const paymentId = req.body.data.id;
+      const paymentStatus = req.body.data.status;
+      
+      // Atualize o pedido no seu banco de dados
+      await Order.findOneAndUpdate(
+        { 'paymentInfo.paymentId': paymentId },
+        { 
+          'paymentInfo.paymentStatus': paymentStatus,
+          status: paymentStatus === 'approved' ? 'processing' : paymentStatus
+        }
+      );
+    }
+    
+    res.status(200).send('ok');
+  } catch (error) {
+    console.error('Erro no webhook:', error);
+    res.status(500).send('Erro ao processar webhook');
+  }
 });
 
-
 // =======================================================
-// --- ROTAS EXISTENTES DA APLICAÇÃO ---
+// ROTAS DA APLICAÇÃO
 // =======================================================
 const authRoutes = require('./src/routes/authRoutes');
 const beerRoutes = require('./src/routes/beerRoutes');
@@ -128,13 +165,22 @@ app.use('/api/users', userRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/pix', pixRoutes);
 
-// Rotas básicas e manipuladores de erro
+// Rota de health check para o Render
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'healthy' });
+});
+
+// Rota raiz
 app.get('/', (req, res) => {
   res.send('API da Cervejaria Virada está funcionando!');
 });
+
+// Middleware para rotas não encontradas
 app.use((req, res, next) => {
   res.status(404).json({ success: false, message: 'Rota não encontrada' });
 });
+
+// Middleware para tratamento de erros
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ success: false, message: 'Erro interno do servidor' });
@@ -144,4 +190,15 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
+  console.log(`Modo: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`Frontend URL: ${process.env.FRONTEND_URL}`);
+  console.log(`Backend URL: ${process.env.BACKEND_URL}`);
+});
+
+// Encerramento adequado do servidor
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received. Shutting down gracefully');
+  server.close(() => {
+    console.log('Process terminated');
+  });
 });
