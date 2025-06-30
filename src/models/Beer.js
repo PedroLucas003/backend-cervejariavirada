@@ -1,11 +1,10 @@
-// src/models/Beer.js
 const mongoose = require('mongoose');
 
 const beerSchema = new mongoose.Schema({
   beerType: {
     type: String,
     required: [true, 'Tipo de cerveja é obrigatório'],
-    enum: ['IPA', 'Stout', 'Weiss', 'Pilsen', 'Outro'],
+    enum: ['Belgian Blonde Ale', 'Tripel', 'Extra Stout', 'Irish Red Ale'],
     trim: true
   },
   description: {
