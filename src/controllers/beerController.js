@@ -10,7 +10,8 @@ const getPublicBeers = async (req, res) => {
       yearCreated: 1, 
       price: 1, 
       quantity: 1,
-      _id: 1
+      _id: 1,
+      createdAt: 1
     });
     
     res.status(200).json({
