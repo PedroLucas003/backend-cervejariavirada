@@ -6,12 +6,7 @@ const adminMiddleware = require('../middlewares/adminMiddleware');
 
 // Rota pública - SEM autenticação
 router.get('/public', (req, res) => {
-  res.set({
-    'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
-    'Pragma': 'no-cache',
-    'Expires': '0',
-    'Surrogate-Control': 'no-store'
-  });
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   beerController.getPublicBeers(req, res);
 });
 
