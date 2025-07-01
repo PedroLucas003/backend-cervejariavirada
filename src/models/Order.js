@@ -1,7 +1,6 @@
 const mongoose = require('mongoose');
 
 const orderSchema = new mongoose.Schema({
-  // Informações do usuário
   user: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -11,8 +10,6 @@ const orderSchema = new mongoose.Schema({
     type: String,
     required: true
   },
-
-  // Itens do pedido
   items: [{
     productId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -37,46 +34,20 @@ const orderSchema = new mongoose.Schema({
     },
     image: String
   }],
-
-  // Endereço de entrega
   shippingAddress: {
-    cep: {
-      type: String,
-      required: true
-    },
-    logradouro: {
-      type: String,
-      required: true
-    },
-    numero: {
-      type: String,
-      required: true
-    },
+    cep: { type: String, required: true },
+    logradouro: { type: String, required: true },
+    numero: { type: String, required: true },
     complemento: String,
-    bairro: {
-      type: String,
-      required: true
-    },
-    cidade: {
-      type: String,
-      required: true
-    },
-    estado: {
-      type: String,
-      required: true,
-      maxlength: 2
-    }
+    bairro: { type: String, required: true },
+    cidade: { type: String, required: true },
+    estado: { type: String, required: true, maxlength: 2 }
   },
-
-  // Informações de pagamento
   paymentInfo: {
     paymentId: { 
-      type: String,
-      required: true
+      type: String // Removido 'required: true' pois o ID real virá do MP
     },
-    preferenceId: { 
-      type: String
-    },
+    preferenceId: { type: String },
     paymentMethod: {
       type: String,
       enum: ['credit_card', 'debit_card', 'boleto', 'pix', 'other']
@@ -86,33 +57,25 @@ const orderSchema = new mongoose.Schema({
       enum: ['pending', 'approved', 'authorized', 'in_process', 'rejected', 'cancelled', 'refunded', 'charged_back'],
       default: 'pending'
     },
-    pixCode: String, 
-    qrCodeBase64: String, 
-    expirationDate: Date, 
-    paymentDetails: { 
-      type: Object
-    },
-    mercadoPagoFee: { 
-      type: Number
-    },
-    netReceivedAmount: { 
-      type: Number
-    }
+    pixCode: String,
+    qrCodeBase64: String,
+    expirationDate: Date,
+    paymentDetails: { type: Object },
+    mercadoPagoFee: { type: Number },
+    netReceivedAmount: { type: Number }
   },
-
-  // Valores financeiros
   subtotal: {
-    type: Number 
+    type: Number,
+    required: true 
   },
   shippingCost: {
     type: Number,
-    default: 0.01 // <--- ALTERADO AQUI: Frete de 1 centavo
+    default: 0.01
   },
   total: {
-    type: Number 
+    type: Number,
+    required: true
   },
-
-  // Status e tracking
   status: {
     type: String,
     enum: ['pending', 'processing', 'shipped', 'delivered', 'cancelled'],
@@ -120,48 +83,19 @@ const orderSchema = new mongoose.Schema({
   },
   trackingCode: String,
   trackingUrl: String,
-
-  // Datas importantes
-  createdAt: {
-    type: Date,
-    default: Date.now
-  },
+  createdAt: { type: Date, default: Date.now },
   paidAt: Date,
   shippedAt: Date,
   deliveredAt: Date,
-
-  // Observações e metadados
   notes: String,
   internalNotes: String,
-  metadata: Object 
+  metadata: Object
 }, {
-  timestamps: true, 
+  timestamps: true,
   toJSON: { virtuals: true },
   toObject: { virtuals: true }
 });
 
-// Método para atualizar status do pagamento
-orderSchema.methods.updatePaymentStatus = async function(status, paymentDetails = {}) {
-  this.paymentInfo.paymentStatus = status;
-  this.paymentInfo.paymentDetails = paymentDetails;
-  
-  if (status === 'approved') {
-    this.paidAt = new Date();
-    this.status = 'processing'; 
-  }
-  
-  return this.save();
-};
-
-// Virtual para status completo
-orderSchema.virtual('fullStatus').get(function() {
-  return {
-    order: this.status,
-    payment: this.paymentInfo.paymentStatus
-  };
-});
-
-// Pré-save para calcular totais
 orderSchema.pre('save', function(next) {
   if (this.isModified('items') || this.isNew) {
     this.subtotal = this.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
