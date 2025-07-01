@@ -1,24 +1,20 @@
-// server.js (VERSÃO COM INTEGRAÇÃO PIX VIA MERCADO PAGO API)
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const connectDB = require('./src/config/db');
-const { MercadoPagoConfig, Preference, Payment } = require('mercadopago'); // Adicionado 'Payment'
+const { MercadoPagoConfig, Preference, Payment } = require('mercadopago');
 const authMiddleware = require('./src/middlewares/authMiddleware');
 const Order = require('./src/models/Order');
+const Beer = require('./src/models/Beer'); // IMPORTANTE: Importar o modelo Beer
 const mongoose = require('mongoose');
-const crypto = require('crypto');
-const Beer = require('./src/models/Beer');
 
-// Configuração do Cliente Mercado Pago
-const client = new MercadoPagoConfig({
-  accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN
+const client = new MercadoPagoConfig({ 
+  accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN 
 });
 
 const app = express();
 
-// Configuração avançada do CORS
 const corsOptions = {
   origin: (origin, callback) => {
     const allowedOrigins = [
@@ -26,9 +22,7 @@ const corsOptions = {
       /https:\/\/frontend-cervejariavirada1-.*\.vercel\.app/,
       'http://localhost:3000'
     ];
-
     if (!origin) return callback(null, true);
-
     if (allowedOrigins.some(pattern => {
       if (typeof pattern === 'string') {
         return origin === pattern;
@@ -39,7 +33,6 @@ const corsOptions = {
     })) {
       return callback(null, true);
     }
-
     callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
@@ -50,40 +43,29 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// Middleware para headers de segurança
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
   res.header('X-Powered-By', 'Cervejaria Virada API');
   res.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   res.header('X-Content-Type-Options', 'nosniff');
   res.header('X-Frame-Options', 'DENY');
   res.header('X-XSS-Protection', '1; mode=block');
-
   next();
 });
 
-// Middleware para parsear JSON
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Rota para o manifest.json (se você tiver um)
 app.get('/manifest.json', (req, res) => {
   res.set('Content-Type', 'application/json');
   res.sendFile(path.join(__dirname, 'public', 'manifest.json'));
 });
 
-// Conectar ao MongoDB
 connectDB();
 
-// =======================================================
-// ROTAS DE PAGAMENTO (MERCADO PAGO)
-// =======================================================
-
-// Rota para criar a PREFERÊNCIA de pagamento (para outros métodos como cartão/boleto)
 app.post('/api/payments/create-preference', authMiddleware, async (req, res) => {
   try {
     const { items, shippingAddress } = req.body;
@@ -114,11 +96,11 @@ app.post('/api/payments/create-preference', authMiddleware, async (req, res) => 
       },
       status: 'pending'
     });
-
+    
     const savedOrder = await newOrder.save();
 
-    const notificationUrl = `${process.env.BACKEND_URL}/api/payments/webhook`;
-    console.log('DEBUG: notification_url sendo enviada ao Mercado Pago:', notificationUrl);
+    const notificationUrl = `${process.env.BACKEND_URL}/api/payments/webhook`; 
+    console.log('DEBUG: notification_url sendo enviada ao Mercado Pago:', notificationUrl); 
 
     const preference = new Preference(client);
     const preferenceResponse = await preference.create({
@@ -134,14 +116,13 @@ app.post('/api/payments/create-preference', authMiddleware, async (req, res) => 
           name: user.nomeCompleto,
           email: user.email,
         },
-        // AJUSTE AQUI: Redirecionar para /my-orders em caso de sucesso
         back_urls: {
           success: `${process.env.FRONTEND_URL}/my-orders`, // Redireciona para Meus Pedidos
           failure: `${process.env.FRONTEND_URL}/payment-failure`,
           pending: `${process.env.FRONTEND_URL}/payment-pending`,
         },
         auto_return: 'approved',
-        external_reference: savedOrder._id.toString(),
+        external_reference: savedOrder._id.toString(), 
         notification_url: notificationUrl,
       }
     });
@@ -160,10 +141,9 @@ app.post('/api/payments/create-preference', authMiddleware, async (req, res) => 
   }
 });
 
-// NOVA ROTA PARA CRIAR PAGAMENTO PIX VIA MERCADO PAGO API
 app.post('/api/payments/create-pix-payment', authMiddleware, async (req, res) => {
   try {
-    const { orderId } = req.body;
+    const { orderId } = req.body; 
     const { user } = req;
 
     const order = await Order.findById(orderId);
@@ -175,45 +155,44 @@ app.post('/api/payments/create-pix-payment', authMiddleware, async (req, res) =>
       return res.status(400).json({ message: 'Pedido já foi processado ou está em status inválido para PIX.' });
     }
 
-    const notificationUrl = `${process.env.BACKEND_URL}/api/payments/webhook`;
-    console.log('DEBUG: notification_url sendo enviada ao Mercado Pago (PIX API):', notificationUrl);
+    const notificationUrl = `${process.env.BACKEND_URL}/api/payments/webhook`; 
+    console.log('DEBUG: notification_url sendo enviada ao Mercado Pago (PIX API):', notificationUrl); 
 
     const paymentInstance = new Payment(client);
     const paymentResponse = await paymentInstance.create({
       body: {
-        transaction_amount: parseFloat(order.total.toFixed(2)),
+        transaction_amount: parseFloat(order.total.toFixed(2)), 
         description: `Pedido Cervejaria Virada #${order._id.toString()}`,
-        payment_method_id: 'pix',
+        payment_method_id: 'pix', 
         payer: {
-          email: user.email,
+          email: user.email, 
           first_name: user.nomeCompleto.split(' ')[0] || 'Cliente',
           last_name: user.nomeCompleto.split(' ').slice(1).join(' ') || '',
-          identification: {
-            type: user.documentType || 'CPF',
-            number: user.documentNumber || '99999999999'
+          identification: { 
+            type: user.documentType || 'CPF', 
+            number: user.documentNumber || '99999999999' 
           }
         },
-        external_reference: order._id.toString(),
+        external_reference: order._id.toString(), 
         notification_url: notificationUrl,
-        // AJUSTE AQUI: back_urls também para PIX API
         back_urls: {
           success: `${process.env.FRONTEND_URL}/my-orders`, // Redireciona para Meus Pedidos
           failure: `${process.env.FRONTEND_URL}/payment-failure`,
           pending: `${process.env.FRONTEND_URL}/payment-pending`,
         },
-        auto_return: 'approved', // Tenta o retorno automático
+        auto_return: 'approved',
       }
     });
 
     order.paymentInfo = {
-      ...order.paymentInfo,
-      paymentId: paymentResponse.id,
+      ...order.paymentInfo, 
+      paymentId: paymentResponse.id, 
       paymentMethod: 'pix',
-      paymentStatus: paymentResponse.status,
-      pixCode: paymentResponse.point_of_interaction.transaction_data.qr_code,
-      qrCodeBase64: paymentResponse.point_of_interaction.transaction_data.qr_code_base64,
-      expirationDate: new Date(paymentResponse.date_of_expiration),
-      paymentDetails: paymentResponse
+      paymentStatus: paymentResponse.status, 
+      pixCode: paymentResponse.point_of_interaction.transaction_data.qr_code, 
+      qrCodeBase64: paymentResponse.point_of_interaction.transaction_data.qr_code_base64, 
+      expirationDate: new Date(paymentResponse.date_of_expiration), 
+      paymentDetails: paymentResponse 
     };
     await order.save();
 
@@ -223,15 +202,15 @@ app.post('/api/payments/create-pix-payment', authMiddleware, async (req, res) =>
       pixCode: order.paymentInfo.pixCode,
       expirationDate: order.paymentInfo.expirationDate,
       amount: order.total,
-      paymentIdMP: order.paymentInfo.paymentId
+      paymentIdMP: order.paymentInfo.paymentId 
     });
 
   } catch (error) {
     console.error('Erro ao criar pagamento PIX via Mercado Pago API:', error);
     if (error.cause && error.cause.length > 0) {
-      error.cause.forEach(e => console.error('MP API Error:', e.code, e.description));
+        error.cause.forEach(e => console.error('MP API Error:', e.code, e.description));
     }
-    res.status(500).json({
+    res.status(500).json({ 
       message: 'Erro ao criar pagamento PIX.',
       error: error.message,
       mp_error_details: error.cause ? error.cause.map(e => ({ code: e.code, description: e.description })) : undefined
@@ -239,8 +218,6 @@ app.post('/api/payments/create-pix-payment', authMiddleware, async (req, res) =>
   }
 });
 
-
-// Rota de webhook para receber notificações do Mercado Pago (APRIMORADA)
 app.post('/api/payments/webhook', async (req, res) => {
   console.log('Webhook do Mercado Pago recebido:', JSON.stringify(req.body, null, 2));
 
@@ -281,19 +258,21 @@ app.post('/api/payments/webhook', async (req, res) => {
             order.status = 'processing';
             order.paidAt = new Date();
             
-            // --- LÓGICA DE ATUALIZAÇÃO DE ESTOQUE (ADICIONADO) ---
+            // --- LÓGICA DE ATUALIZAÇÃO DE ESTOQUE ---
             for (const item of order.items) {
                 try {
-                    const beer = await Beer.findById(item.productId);
-                    if (beer) {
-                        if (beer.quantity >= item.quantity) {
-                            beer.quantity -= item.quantity;
-                            await beer.save();
-                            console.log(`Estoque da cerveja ${beer.beerType} (${beer._id}) reduzido em ${item.quantity}. Novo estoque: ${beer.quantity}`);
-                        } else {
-                            console.warn(`Estoque insuficiente para ${item.name} (${item.productId}). Pedido ${order._id}. Estoque atual: ${beer.quantity}, Quantidade pedida: ${item.quantity}`);
-                            // Você pode querer mudar o status do pedido para 'cancelled' ou 'pending_stock' aqui
-                            // ou notificar o admin. Por enquanto, apenas um aviso.
+                    // Usamos findByIdAndUpdate com $inc para uma atualização atômica e segura
+                    const updatedBeer = await Beer.findByIdAndUpdate(
+                        item.productId,
+                        { $inc: { quantity: -item.quantity } },
+                        { new: true } // Retorna o documento atualizado
+                    );
+
+                    if (updatedBeer) {
+                        console.log(`Estoque da cerveja ${updatedBeer.beerType} (${updatedBeer._id}) reduzido em ${item.quantity}. Novo estoque: ${updatedBeer.quantity}`);
+                        if (updatedBeer.quantity < 0) {
+                            console.warn(`Estoque negativo para ${updatedBeer.beerType} (${updatedBeer._id}) após pedido ${order._id}. Isso pode indicar um problema de concorrência ou validação.`);
+                            // Considere adicionar lógica para notificar admin ou ajustar o pedido
                         }
                     } else {
                         console.warn(`Cerveja com ID ${item.productId} não encontrada para atualização de estoque no pedido ${order._id}.`);
@@ -332,33 +311,25 @@ app.post('/api/payments/webhook', async (req, res) => {
   res.status(200).send('ok');
 });
 
-
-// =======================================================
-// ROTAS DA APLICAÇÃO (MANTIDAS)
-// =======================================================
 const authRoutes = require('./src/routes/authRoutes');
 const beerRoutes = require('./src/routes/beerRoutes');
 const userRoutes = require('./src/routes/userRoutes');
 const orderRoutes = require('./src/routes/orderRoutes');
-const pixRoutes = require('./src/routes/pixRoutes'); // Esta rota de PIX estático será desativada ou removida
+const pixRoutes = require('./src/routes/pixRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/beers', beerRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/orders', orderRoutes);
-// A rota /api/pix será desativada ou modificada, pois a geração PIX agora será via /api/payments/create-pix-payment
-// app.use('/api/pix', pixRoutes); // Comente ou remova esta linha se não for mais usar o PIX estático
 
-// Rota de health check para o Render
 app.get('/health', (req, res) => {
-  res.status(200).json({
+  res.status(200).json({ 
     status: 'healthy',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development'
   });
 });
 
-// Rota raiz
 app.get('/', (req, res) => {
   res.json({
     message: 'API da Cervejaria Virada está funcionando!',
@@ -368,36 +339,31 @@ app.get('/', (req, res) => {
   });
 });
 
-// Middleware para rotas não encontradas
 app.use((req, res, next) => {
-  res.status(404).json({
-    success: false,
+  res.status(404).json({ 
+    success: false, 
     message: 'Rota não encontrada',
     path: req.path,
     method: req.method
   });
 });
 
-// Middleware para tratamento de erros
 app.use((err, req, res, next) => {
   console.error(err.stack);
-
   if (err.message === 'Not allowed by CORS') {
-    return res.status(403).json({
+    return res.status(403).json({ 
       success: false,
       message: 'Acesso não permitido pela política CORS',
       origin: req.headers.origin
     });
   }
-
-  res.status(500).json({
-    success: false,
+  res.status(500).json({ 
+    success: false, 
     message: 'Erro interno do servidor',
     error: process.env.NODE_ENV === 'development' ? err.message : undefined
   });
 });
 
-// Iniciar servidor
 const PORT = process.env.PORT || 3001;
 const server = app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
@@ -407,7 +373,6 @@ const server = app.listen(PORT, () => {
   console.log(`Banco de Dados: ${process.env.DB_FULL_URI ? 'Conectado' : 'Não configurado'}`);
 });
 
-// Encerramento adequado do servidor
 process.on('SIGTERM', () => {
   console.log('SIGTERM received. Shutting down gracefully');
   server.close(() => {
@@ -419,7 +384,6 @@ process.on('SIGTERM', () => {
   });
 });
 
-// Tratamento de erros não capturados
 process.on('unhandledRejection', (err) => {
   console.error('Erro não tratado:', err);
   server.close(() => process.exit(1));

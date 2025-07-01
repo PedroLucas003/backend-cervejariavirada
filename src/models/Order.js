@@ -72,7 +72,6 @@ const orderSchema = new mongoose.Schema({
   paymentInfo: {
     paymentId: { 
       type: String,
-      required: true
     },
     preferenceId: { 
       type: String
