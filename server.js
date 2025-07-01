@@ -8,11 +8,12 @@ const { MercadoPagoConfig, Preference, Payment } = require('mercadopago'); // Ad
 const authMiddleware = require('./src/middlewares/authMiddleware');
 const Order = require('./src/models/Order');
 const mongoose = require('mongoose');
-const crypto = require('crypto'); // Adicione no topo do server.js se ainda não tiver
+const crypto = require('crypto');
+const Beer = require('./src/models/Beer');
 
 // Configuração do Cliente Mercado Pago
-const client = new MercadoPagoConfig({ 
-  accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN 
+const client = new MercadoPagoConfig({
+  accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN
 });
 
 const app = express();
@@ -25,9 +26,9 @@ const corsOptions = {
       /https:\/\/frontend-cervejariavirada1-.*\.vercel\.app/,
       'http://localhost:3000'
     ];
-    
+
     if (!origin) return callback(null, true);
-    
+
     if (allowedOrigins.some(pattern => {
       if (typeof pattern === 'string') {
         return origin === pattern;
@@ -38,7 +39,7 @@ const corsOptions = {
     })) {
       return callback(null, true);
     }
-    
+
     callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
@@ -55,13 +56,13 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Credentials', 'true');
   res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  
+
   res.header('X-Powered-By', 'Cervejaria Virada API');
   res.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   res.header('X-Content-Type-Options', 'nosniff');
   res.header('X-Frame-Options', 'DENY');
   res.header('X-XSS-Protection', '1; mode=block');
-  
+
   next();
 });
 
@@ -109,13 +110,15 @@ app.post('/api/payments/create-preference', authMiddleware, async (req, res) => 
         cep: shippingAddress.cep.replace(/\D/g, ''),
       },
       paymentInfo: {
-        paymentId: new mongoose.Types.ObjectId().toString(), // ID provisório
         paymentStatus: 'pending'
       },
       status: 'pending'
     });
-    
+
     const savedOrder = await newOrder.save();
+
+    const notificationUrl = `${process.env.BACKEND_URL}/api/payments/webhook`;
+    console.log('DEBUG: notification_url sendo enviada ao Mercado Pago:', notificationUrl);
 
     const preference = new Preference(client);
     const preferenceResponse = await preference.create({
@@ -131,14 +134,15 @@ app.post('/api/payments/create-preference', authMiddleware, async (req, res) => 
           name: user.nomeCompleto,
           email: user.email,
         },
+        // AJUSTE AQUI: Redirecionar para /my-orders em caso de sucesso
         back_urls: {
-          success: `${process.env.FRONTEND_URL}/payment-success`,
+          success: `${process.env.FRONTEND_URL}/my-orders`, // Redireciona para Meus Pedidos
           failure: `${process.env.FRONTEND_URL}/payment-failure`,
           pending: `${process.env.FRONTEND_URL}/payment-pending`,
         },
         auto_return: 'approved',
-        external_reference: savedOrder._id.toString(), 
-        notification_url: `${process.env.BACKEND_URL}/api/payments/webhook`,
+        external_reference: savedOrder._id.toString(),
+        notification_url: notificationUrl,
       }
     });
 
@@ -159,7 +163,7 @@ app.post('/api/payments/create-preference', authMiddleware, async (req, res) => 
 // NOVA ROTA PARA CRIAR PAGAMENTO PIX VIA MERCADO PAGO API
 app.post('/api/payments/create-pix-payment', authMiddleware, async (req, res) => {
   try {
-    const { orderId } = req.body; // Recebe o orderId do frontend
+    const { orderId } = req.body;
     const { user } = req;
 
     const order = await Order.findById(orderId);
@@ -171,36 +175,45 @@ app.post('/api/payments/create-pix-payment', authMiddleware, async (req, res) =>
       return res.status(400).json({ message: 'Pedido já foi processado ou está em status inválido para PIX.' });
     }
 
+    const notificationUrl = `${process.env.BACKEND_URL}/api/payments/webhook`;
+    console.log('DEBUG: notification_url sendo enviada ao Mercado Pago (PIX API):', notificationUrl);
+
     const paymentInstance = new Payment(client);
     const paymentResponse = await paymentInstance.create({
       body: {
-        transaction_amount: parseFloat(order.total.toFixed(2)), // Valor total do pedido
+        transaction_amount: parseFloat(order.total.toFixed(2)),
         description: `Pedido Cervejaria Virada #${order._id.toString()}`,
-        payment_method_id: 'pix', // Indica que é um pagamento PIX
+        payment_method_id: 'pix',
         payer: {
-          email: user.email, // Email do pagador
+          email: user.email,
           first_name: user.nomeCompleto.split(' ')[0] || 'Cliente',
           last_name: user.nomeCompleto.split(' ').slice(1).join(' ') || '',
-          identification: { // Opcional, mas bom para identificação
-            type: user.documentType || 'CPF', // Assumindo que você tem isso no user
-            number: user.documentNumber || '99999999999' // Assumindo que você tem isso no user
+          identification: {
+            type: user.documentType || 'CPF',
+            number: user.documentNumber || '99999999999'
           }
         },
-        external_reference: order._id.toString(), // Linka o pagamento MP ao seu Order ID
-        notification_url: `${process.env.BACKEND_URL}/api/payments/webhook`,
+        external_reference: order._id.toString(),
+        notification_url: notificationUrl,
+        // AJUSTE AQUI: back_urls também para PIX API
+        back_urls: {
+          success: `${process.env.FRONTEND_URL}/my-orders`, // Redireciona para Meus Pedidos
+          failure: `${process.env.FRONTEND_URL}/payment-failure`,
+          pending: `${process.env.FRONTEND_URL}/payment-pending`,
+        },
+        auto_return: 'approved', // Tenta o retorno automático
       }
     });
 
-    // Atualiza o pedido com as informações do pagamento PIX do Mercado Pago
     order.paymentInfo = {
-      ...order.paymentInfo, // Mantém o paymentId provisório se já existir
-      paymentId: paymentResponse.id, // ID real do pagamento no Mercado Pago
+      ...order.paymentInfo,
+      paymentId: paymentResponse.id,
       paymentMethod: 'pix',
-      paymentStatus: paymentResponse.status, // Status inicial do PIX (pending)
-      pixCode: paymentResponse.point_of_interaction.transaction_data.qr_code, // Código copia e cola
-      qrCodeBase64: paymentResponse.point_of_interaction.transaction_data.qr_code_base64, // QR Code em base64
-      expirationDate: new Date(paymentResponse.date_of_expiration), // Data de expiração do PIX
-      paymentDetails: paymentResponse // Salva a resposta completa do MP
+      paymentStatus: paymentResponse.status,
+      pixCode: paymentResponse.point_of_interaction.transaction_data.qr_code,
+      qrCodeBase64: paymentResponse.point_of_interaction.transaction_data.qr_code_base64,
+      expirationDate: new Date(paymentResponse.date_of_expiration),
+      paymentDetails: paymentResponse
     };
     await order.save();
 
@@ -210,16 +223,15 @@ app.post('/api/payments/create-pix-payment', authMiddleware, async (req, res) =>
       pixCode: order.paymentInfo.pixCode,
       expirationDate: order.paymentInfo.expirationDate,
       amount: order.total,
-      paymentIdMP: order.paymentInfo.paymentId // Retorna o ID do pagamento do MP
+      paymentIdMP: order.paymentInfo.paymentId
     });
 
   } catch (error) {
     console.error('Erro ao criar pagamento PIX via Mercado Pago API:', error);
-    // Log detalhado do erro da API do Mercado Pago
     if (error.cause && error.cause.length > 0) {
-        error.cause.forEach(e => console.error('MP API Error:', e.code, e.description));
+      error.cause.forEach(e => console.error('MP API Error:', e.code, e.description));
     }
-    res.status(500).json({ 
+    res.status(500).json({
       message: 'Erro ao criar pagamento PIX.',
       error: error.message,
       mp_error_details: error.cause ? error.cause.map(e => ({ code: e.code, description: e.description })) : undefined
@@ -232,31 +244,13 @@ app.post('/api/payments/create-pix-payment', authMiddleware, async (req, res) =>
 app.post('/api/payments/webhook', async (req, res) => {
   console.log('Webhook do Mercado Pago recebido:', JSON.stringify(req.body, null, 2));
 
-  // --- Validação da Assinatura Secreta (ADICIONADO) ---
   const secret = process.env.MERCADOPAGO_WEBHOOK_SECRET;
-  const receivedSignature = req.headers['x-signature']; // O cabeçalho de assinatura
-  const receivedTimestamp = req.headers['x-request-id']; // Mercado Pago usa X-Request-ID como timestamp, ou X-MercadoPago-Signature/Timestamp
-
-  // A validação é um pouco mais complexa do que uma simples verificação de header.
-  // O ideal é usar a função de validação do SDK do MP ou replicar a lógica.
-  // A biblioteca `mercadopago` em NodeJS não tem uma função de validação de webhook pronta no SDK diretamente.
-  // Você teria que implementar a validação manual baseada na documentação do Mercado Pago:
-  // https://www.mercadopago.com.br/developers/pt/docs/checkout-pro/webhooks/security/signatures
-  // Basicamente, você recalcula a assinatura e compara.
-
-  // Por simplicidade, para fins de teste, podemos adicionar um log para verificar se o secret está sendo lido
   if (!secret) {
       console.error('MERCADOPAGO_WEBHOOK_SECRET não configurado no .env!');
-      // Não retorne erro, apenas logue, para não quebrar a funcionalidade base de webhook
   } else {
-      console.log('Webhook Secret carregado para validação.');
-      // Lógica de validação da assinatura aqui (complexa, não vou adicionar o código completo agora para não poluir,
-      // mas saiba que é um ponto a ser implementado se a segurança for crítica).
+      console.log('Webhook Secret carregado para possível validação.');
   }
-  // --- Fim da Validação da Assinatura Secreta ---
 
-  // O Mercado Pago pode enviar diferentes tipos de notificações (payment, merchant_order, etc.)
-  // Nosso foco é 'payment' para atualização de status.
   if (req.body && req.body.type === 'payment' && req.body.data && req.body.data.id) {
     const paymentId = req.body.data.id;
     console.log(`Webhook de pagamento recebido para Payment ID: ${paymentId}`);
@@ -266,8 +260,8 @@ app.post('/api/payments/webhook', async (req, res) => {
       const paymentDetails = await payment.get({ id: paymentId });
       console.log('Detalhes completos do pagamento do Mercado Pago:', JSON.stringify(paymentDetails, null, 2));
 
-      const externalReference = paymentDetails.external_reference; // Nosso order._id
-      const paymentStatusMP = paymentDetails.status; // Status do Mercado Pago (approved, pending, rejected, etc.)
+      const externalReference = paymentDetails.external_reference;
+      const paymentStatusMP = paymentDetails.status;
       const netReceivedAmount = paymentDetails.transaction_details?.net_received_amount;
       const mercadoPagoFee = paymentDetails.fee_details?.reduce((sum, fee) => sum + fee.amount, 0);
 
@@ -277,16 +271,39 @@ app.post('/api/payments/webhook', async (req, res) => {
         if (order) {
           console.log(`Atualizando pedido ${order._id} com status de pagamento: ${paymentStatusMP}`);
           
-          order.paymentInfo.paymentId = paymentId; // Garante que o paymentId do MP esteja salvo
+          order.paymentInfo.paymentId = paymentId;
           order.paymentInfo.paymentStatus = paymentStatusMP;
-          order.paymentInfo.paymentDetails = paymentDetails; // Salva todos os detalhes do MP
+          order.paymentInfo.paymentDetails = paymentDetails;
           order.paymentInfo.netReceivedAmount = netReceivedAmount;
           order.paymentInfo.mercadoPagoFee = mercadoPagoFee;
 
-          // Mapeia o status do Mercado Pago para o status do seu pedido
           if (paymentStatusMP === 'approved') {
             order.status = 'processing';
             order.paidAt = new Date();
+            
+            // --- LÓGICA DE ATUALIZAÇÃO DE ESTOQUE (ADICIONADO) ---
+            for (const item of order.items) {
+                try {
+                    const beer = await Beer.findById(item.productId);
+                    if (beer) {
+                        if (beer.quantity >= item.quantity) {
+                            beer.quantity -= item.quantity;
+                            await beer.save();
+                            console.log(`Estoque da cerveja ${beer.beerType} (${beer._id}) reduzido em ${item.quantity}. Novo estoque: ${beer.quantity}`);
+                        } else {
+                            console.warn(`Estoque insuficiente para ${item.name} (${item.productId}). Pedido ${order._id}. Estoque atual: ${beer.quantity}, Quantidade pedida: ${item.quantity}`);
+                            // Você pode querer mudar o status do pedido para 'cancelled' ou 'pending_stock' aqui
+                            // ou notificar o admin. Por enquanto, apenas um aviso.
+                        }
+                    } else {
+                        console.warn(`Cerveja com ID ${item.productId} não encontrada para atualização de estoque no pedido ${order._id}.`);
+                    }
+                } catch (stockErr) {
+                    console.error(`Erro ao atualizar estoque para item ${item.productId} no pedido ${order._id}:`, stockErr);
+                }
+            }
+            // --- FIM DA LÓGICA DE ATUALIZAÇÃO DE ESTOQUE ---
+
           } else if (paymentStatusMP === 'pending' || paymentStatusMP === 'in_process') {
             order.status = 'pending'; 
           } else if (paymentStatusMP === 'rejected' || paymentStatusMP === 'cancelled' || paymentStatusMP === 'refunded' || paymentStatusMP === 'charged_back') {
@@ -296,7 +313,7 @@ app.post('/api/payments/webhook', async (req, res) => {
           await order.save();
           console.log(`Pedido ${order._id} atualizado com sucesso para status: ${order.status}`);
         } else {
-          console.warn(`Webhook: Pedido com external_reference ${externalReference} não encontrado no banco de dados.`);
+          console.warn('Webhook: Pedido com external_reference ${externalReference} não encontrado no banco de dados.');
         }
       } else {
         console.warn('Webhook: Notificação recebida sem external_reference. Não foi possível associar a um pedido.');
@@ -304,7 +321,6 @@ app.post('/api/payments/webhook', async (req, res) => {
 
     } catch (error) {
       console.error('Erro ao processar webhook do Mercado Pago:', error);
-      // Log detalhado do erro da API do Mercado Pago
       if (error.response && error.response.data) {
           console.error('MP API Error Response:', error.response.data);
       }
@@ -313,7 +329,7 @@ app.post('/api/payments/webhook', async (req, res) => {
     console.warn('Webhook: Notificação recebida com formato inesperado ou tipo não processado:', req.body);
   }
 
-  res.status(200).send('ok'); // Sempre responda 200 OK para o Mercado Pago
+  res.status(200).send('ok');
 });
 
 
@@ -335,7 +351,7 @@ app.use('/api/orders', orderRoutes);
 
 // Rota de health check para o Render
 app.get('/health', (req, res) => {
-  res.status(200).json({ 
+  res.status(200).json({
     status: 'healthy',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development'
@@ -354,8 +370,8 @@ app.get('/', (req, res) => {
 
 // Middleware para rotas não encontradas
 app.use((req, res, next) => {
-  res.status(404).json({ 
-    success: false, 
+  res.status(404).json({
+    success: false,
     message: 'Rota não encontrada',
     path: req.path,
     method: req.method
@@ -365,17 +381,17 @@ app.use((req, res, next) => {
 // Middleware para tratamento de erros
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  
+
   if (err.message === 'Not allowed by CORS') {
-    return res.status(403).json({ 
+    return res.status(403).json({
       success: false,
       message: 'Acesso não permitido pela política CORS',
       origin: req.headers.origin
     });
   }
-  
-  res.status(500).json({ 
-    success: false, 
+
+  res.status(500).json({
+    success: false,
     message: 'Erro interno do servidor',
     error: process.env.NODE_ENV === 'development' ? err.message : undefined
   });
