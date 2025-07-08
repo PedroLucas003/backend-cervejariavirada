@@ -1,7 +1,10 @@
 const Order = require('../models/Order');
 const Beer = require('../models/Beer'); // Importar o modelo Beer para estorno de estoque
 const { MercadoPagoConfig, Payment } = require('mercadopago'); // Importar Payment para reembolsos
-const client = new MercadoPagoConfig({ accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN }); // Cliente MP
+
+// A instância do cliente Mercado Pago deve ser global ou acessível aqui
+// para ser usada pelas funções que interagem com a API do MP.
+const client = new MercadoPagoConfig({ accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN }); 
 
 // ==========================================================
 // FUNÇÃO DE CRIAR PEDIDO
@@ -176,11 +179,10 @@ exports.cancelOrder = async (req, res) => {
         return res.status(400).json({ success: false, message: 'ID de pagamento do Mercado Pago não encontrado para este pedido.' });
     }
 
-    const paymentService = new Payment(client); // Cria a instância do serviço de Pagamento
-
     try {
-        const refundResponse = await paymentService.refunds.create({ // CORRIGIDO: Acessa refunds.create
-            payment_id: order.paymentInfo.paymentId, // CORRIGIDO: usa payment_id
+        // CORREÇÃO FINAL AQUI: Acessar o recurso `refunds` através da instância `client.payment`
+        const refundResponse = await client.payment.refunds.create({ 
+            payment_id: order.paymentInfo.paymentId, 
             body: { 
                 amount: order.total 
             }
