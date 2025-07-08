@@ -16,7 +16,7 @@ exports.createOrder = async (req, res) => {
         message: 'O carrinho não pode estar vazio.'
       });
     }
-    
+
     const newOrder = new Order({
       user: req.userId,
       userEmail: req.user.email,
@@ -46,9 +46,9 @@ exports.createOrder = async (req, res) => {
     const savedOrder = await newOrder.save();
 
     res.status(201).json({
-        success: true,
-        message: 'Pedido criado com sucesso!',
-        data: savedOrder
+      success: true,
+      message: 'Pedido criado com sucesso!',
+      data: savedOrder
     });
 
   } catch (error) {
@@ -68,9 +68,9 @@ exports.createOrder = async (req, res) => {
 exports.getUserOrders = async (req, res) => {
   try {
     const orders = await Order.find({ user: req.userId })
-      .populate({ 
+      .populate({
         path: 'items.productId',
-        select: 'nome imagem' 
+        select: 'nome imagem'
       })
       .sort({ createdAt: -1 });
 
@@ -94,8 +94,8 @@ exports.getUserOrders = async (req, res) => {
 exports.getAllOrders = async (req, res) => {
   try {
     const orders = await Order.find({})
-      .populate('user', 'nomeCompleto email') 
-      .populate({ 
+      .populate('user', 'nomeCompleto email')
+      .populate({
         path: 'items.productId',
         select: 'nome imagem'
       })
@@ -174,51 +174,51 @@ exports.cancelOrder = async (req, res) => {
     if (order.paymentInfo.paymentStatus !== 'approved' && order.paymentInfo.paymentStatus !== 'authorized') {
       return res.status(400).json({ success: false, message: `Pagamento com status '${order.paymentInfo.paymentStatus}' não pode ser reembolsado.` });
     }
-    
+
     if (!order.paymentInfo.paymentId) {
-        return res.status(400).json({ success: false, message: 'ID de pagamento do Mercado Pago não encontrado para este pedido.' });
+      return res.status(400).json({ success: false, message: 'ID de pagamento do Mercado Pago não encontrado para este pedido.' });
     }
 
     // 3. Chamar a API de Reembolso do Mercado Pago
     const paymentInstance = new Payment(client); // Usa o cliente MP para pagamentos
 
     try {
-        const refundResponse = await paymentInstance.refund({ 
-            id: order.paymentInfo.paymentId, // ID do pagamento no MP
-            body: { 
-                amount: order.total // Reembolsa o valor total do pedido
-            }
-        });
+      const refundResponse = await paymentInstance.refunds.create({ // <--- MUDANÇA AQUI: .refunds.create
+        payment_id: order.paymentInfo.paymentId, // <--- MUDANÇA AQUI: Usa 'payment_id', não 'id'
+        body: {
+          amount: order.total // Reembolsa o valor total do pedido
+        }
+      });
 
-        if (refundResponse.status === 'approved' || refundResponse.status === 'pending') {
-            // Reembolso bem-sucedido ou pendente de confirmação
-            order.status = 'cancelled'; // Muda o status do pedido para cancelado
-            order.paymentInfo.paymentStatus = 'refunded'; // Muda o status do pagamento para reembolsado
-            order.notes = (order.notes || '') + `\nPedido cancelado e reembolsado em ${new Date().toISOString()}. Status MP: ${refundResponse.status_detail}`;
-            
-            // 4. Estornar estoque (se o pedido já havia reduzido o estoque)
-            // Certifique-se que você tenha um campo isStockReduced no Order Model
-            // Se não tiver, adicione order.isStockReduced = { type: Boolean, default: false } no Order Model
-            if (order.isStockReduced) { // Verifica se o estoque já havia sido reduzido para evitar duplicação
-                for (const item of order.items) {
-                    await Beer.findByIdAndUpdate(item.productId, { $inc: { quantity: item.quantity } }); // Adiciona ao estoque
-                    console.log(`Estoque de ${item.name} (${item.productId}) estornado em ${item.quantity} unidades.`);
-                }
-                order.isStockReduced = false; // Marca que o estoque foi estornado
-            }
+      if (refundResponse.status === 'approved' || refundResponse.status === 'pending') {
+        // Reembolso bem-sucedido ou pendente de confirmação
+        order.status = 'cancelled'; // Muda o status do pedido para cancelado
+        order.paymentInfo.paymentStatus = 'refunded'; // Muda o status do pagamento para reembolsado
+        order.notes = (order.notes || '') + `\nPedido cancelado e reembolsado em ${new Date().toISOString()}. Status MP: ${refundResponse.status_detail}`;
 
-            await order.save();
-            return res.status(200).json({ success: true, message: 'Pedido cancelado e reembolsado com sucesso!', data: order, refundDetails: refundResponse });
-
-        } else {
-            // Reembolso não aprovado pelo Mercado Pago
-            console.error('Erro no reembolso do Mercado Pago:', refundResponse);
-            return res.status(400).json({ success: false, message: `Falha no reembolso via Mercado Pago. Status: ${refundResponse.status} - ${refundResponse.status_detail}` });
+        // 4. Estornar estoque (se o pedido já havia reduzido o estoque)
+        // Certifique-se que você tenha um campo isStockReduced no Order Model
+        // Se não tiver, adicione order.isStockReduced = { type: Boolean, default: false } no Order Model
+        if (order.isStockReduced) { // Verifica se o estoque já havia sido reduzido para evitar duplicação
+          for (const item of order.items) {
+            await Beer.findByIdAndUpdate(item.productId, { $inc: { quantity: item.quantity } }); // Adiciona ao estoque
+            console.log(`Estoque de ${item.name} (${item.productId}) estornado em ${item.quantity} unidades.`);
+          }
+          order.isStockReduced = false; // Marca que o estoque foi estornado
         }
 
+        await order.save();
+        return res.status(200).json({ success: true, message: 'Pedido cancelado e reembolsado com sucesso!', data: order, refundDetails: refundResponse });
+
+      } else {
+        // Reembolso não aprovado pelo Mercado Pago
+        console.error('Erro no reembolso do Mercado Pago:', refundResponse);
+        return res.status(400).json({ success: false, message: `Falha no reembolso via Mercado Pago. Status: ${refundResponse.status} - ${refundResponse.status_detail}` });
+      }
+
     } catch (mpError) {
-        console.error('Erro ao chamar API de Reembolso do Mercado Pago:', mpError.response ? mpError.response.data : mpError.message);
-        return res.status(500).json({ success: false, message: 'Erro ao processar o reembolso via Mercado Pago API.' });
+      console.error('Erro ao chamar API de Reembolso do Mercado Pago:', mpError.response ? mpError.response.data : mpError.message);
+      return res.status(500).json({ success: false, message: 'Erro ao processar o reembolso via Mercado Pago API.' });
     }
 
   } catch (error) {
