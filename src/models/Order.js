@@ -70,10 +70,10 @@ const orderSchema = new mongoose.Schema({
 
   // Informações de pagamento
   paymentInfo: {
-    paymentId: { 
-      type: String,
+    paymentId: {
+      type: String, // Correção já presente: não é obrigatório aqui
     },
-    preferenceId: { 
+    preferenceId: {
       type: String
     },
     paymentMethod: {
@@ -85,30 +85,30 @@ const orderSchema = new mongoose.Schema({
       enum: ['pending', 'approved', 'authorized', 'in_process', 'rejected', 'cancelled', 'refunded', 'charged_back'],
       default: 'pending'
     },
-    pixCode: String, 
-    qrCodeBase64: String, 
-    expirationDate: Date, 
-    paymentDetails: { 
+    pixCode: String,
+    qrCodeBase64: String,
+    expirationDate: Date,
+    paymentDetails: {
       type: Object
     },
-    mercadoPagoFee: { 
+    mercadoPagoFee: {
       type: Number
     },
-    netReceivedAmount: { 
+    netReceivedAmount: {
       type: Number
     }
   },
 
   // Valores financeiros
   subtotal: {
-    type: Number 
+    type: Number
   },
   shippingCost: {
     type: Number,
-    default: 0.01 // <--- ALTERADO AQUI: Frete de 1 centavo
+    default: 0.01
   },
   total: {
-    type: Number 
+    type: Number
   },
 
   // Status e tracking
@@ -119,6 +119,12 @@ const orderSchema = new mongoose.Schema({
   },
   trackingCode: String,
   trackingUrl: String,
+
+  // --- NOVO CAMPO: Para controlar o estorno de estoque ---
+  isStockReduced: {
+    type: Boolean,
+    default: false
+  },
 
   // Datas importantes
   createdAt: {
@@ -132,27 +138,27 @@ const orderSchema = new mongoose.Schema({
   // Observações e metadados
   notes: String,
   internalNotes: String,
-  metadata: Object 
+  metadata: Object
 }, {
-  timestamps: true, 
+  timestamps: true,
   toJSON: { virtuals: true },
   toObject: { virtuals: true }
 });
 
-// Método para atualizar status do pagamento
+// Método para atualizar status do pagamento (seu código atual)
 orderSchema.methods.updatePaymentStatus = async function(status, paymentDetails = {}) {
   this.paymentInfo.paymentStatus = status;
   this.paymentInfo.paymentDetails = paymentDetails;
-  
+
   if (status === 'approved') {
     this.paidAt = new Date();
-    this.status = 'processing'; 
+    this.status = 'processing';
   }
-  
+
   return this.save();
 };
 
-// Virtual para status completo
+// Virtual para status completo (seu código atual)
 orderSchema.virtual('fullStatus').get(function() {
   return {
     order: this.status,
@@ -160,7 +166,7 @@ orderSchema.virtual('fullStatus').get(function() {
   };
 });
 
-// Pré-save para calcular totais
+// Pré-save para calcular totais (seu código atual)
 orderSchema.pre('save', function(next) {
   if (this.isModified('items') || this.isNew) {
     this.subtotal = this.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
