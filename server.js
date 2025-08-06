@@ -13,7 +13,7 @@ const client = new MercadoPagoConfig({
   accessToken: process.env.MERCADOPAGO_ACCESS_TOKEN 
 });
 
-const app = express();
+const app = express(); 
 
 const corsOptions = {
   origin: (origin, callback) => {
